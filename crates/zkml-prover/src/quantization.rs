@@ -3,9 +3,9 @@
 //! Converts floating-point model parameters into fixed-point
 //! representations suitable for arithmetic inside ZK circuits.
 
+use zkml_common::error::ZkmlError;
 use zkml_common::fixed_point::FixedPoint;
 use zkml_common::models::{DecisionTree, DenseLayer, LogisticRegression, Model, TinyMLP, TreeNode};
-use zkml_common::error::ZkmlError;
 
 /// Quantize a vector of `f64` values into fixed-point representations.
 pub fn quantize_weights(weights: &[f64]) -> Vec<FixedPoint> {
@@ -200,16 +200,10 @@ fn check_logistic_range(lr: &LogisticRegression) -> Result<(), ZkmlError> {
 fn check_mlp_range(mlp: &TinyMLP) -> Result<(), ZkmlError> {
     for (layer_idx, layer) in mlp.layers.iter().enumerate() {
         for (i, w) in layer.weights.iter().enumerate() {
-            check_fixed_point_range(
-                &w.value,
-                &format!("MLP layer {} weight {}", layer_idx, i),
-            )?;
+            check_fixed_point_range(&w.value, &format!("MLP layer {} weight {}", layer_idx, i))?;
         }
         for (i, b) in layer.biases.iter().enumerate() {
-            check_fixed_point_range(
-                &b.value,
-                &format!("MLP layer {} bias {}", layer_idx, i),
-            )?;
+            check_fixed_point_range(&b.value, &format!("MLP layer {} bias {}", layer_idx, i))?;
         }
     }
     Ok(())
@@ -296,10 +290,7 @@ fn check_logistic_overflow_bounds(
     Ok(())
 }
 
-fn check_dense_layer_overflow_bounds(
-    input_max: f64,
-    layer: &DenseLayer,
-) -> Result<f64, ZkmlError> {
+fn check_dense_layer_overflow_bounds(input_max: f64, layer: &DenseLayer) -> Result<f64, ZkmlError> {
     let scale = 16u32;
     let input_max_scaled = (input_max * (1i64 << scale) as f64) as i64;
 
@@ -419,7 +410,9 @@ fn validate_accuracy(
 #[cfg(test)]
 mod tests_validation {
     use super::*;
-    use zkml_common::models::{DecisionTree, DenseLayer, LogisticRegression, Model, TinyMLP, TreeNode};
+    use zkml_common::models::{
+        DecisionTree, DenseLayer, LogisticRegression, Model, TinyMLP, TreeNode,
+    };
 
     #[test]
     fn range_check_rejects_i64_min() {
@@ -526,19 +519,15 @@ mod tests_validation {
             bias: FixedPoint::quantize(0.0),
         };
         let model = Model::LogisticRegression(lr);
-        
+
         // Validation dataset where quantized model matches float
-        let dataset = vec![
-            (vec![0.5], 0.5),
-            (vec![1.0], 1.0),
-            (vec![-0.5], -0.5),
-        ];
-        
+        let dataset = vec![(vec![0.5], 0.5), (vec![1.0], 1.0), (vec![-0.5], -0.5)];
+
         let cfg = QuantizationConfig {
             max_input_magnitude: 1.0,
             min_agreement: 0.99,
         };
-        
+
         let result = validate_accuracy(&model, &dataset, &cfg);
         assert!(result.is_ok());
         let report = result.unwrap();
@@ -555,19 +544,19 @@ mod tests_validation {
             bias: FixedPoint::quantize(0.0),
         };
         let model = Model::LogisticRegression(lr);
-        
+
         // Dataset where quantization error causes significant deviation
         let dataset = vec![
             (vec![1000.0], 0.1), // Float: 1000.0 * 0.0001 = 0.1
             (vec![2000.0], 0.2),
             (vec![3000.0], 0.3),
         ];
-        
+
         let cfg = QuantizationConfig {
             max_input_magnitude: 3000.0,
             min_agreement: 0.99,
         };
-        
+
         let result = validate_accuracy(&model, &dataset, &cfg);
         // This should fail due to quantization precision loss
         assert!(result.is_err());
@@ -580,17 +569,17 @@ mod tests_validation {
             bias: FixedPoint::quantize(0.1),
         };
         let model = Model::LogisticRegression(lr);
-        
+
         let dataset = vec![
             (vec![0.1, 0.2, 0.3, 0.4, 0.5], 0.85),
             (vec![0.0, 0.0, 0.0, 0.0, 0.0], 0.1),
         ];
-        
+
         let cfg = QuantizationConfig {
             max_input_magnitude: 1.0,
             min_agreement: 0.5, // Lower threshold for this test
         };
-        
+
         let result = validate_model(&model, &cfg, &dataset);
         assert!(result.is_ok());
     }
