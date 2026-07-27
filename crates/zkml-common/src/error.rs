@@ -14,6 +14,8 @@ pub enum ZkmlError {
     ParseError(String),
     /// A fixed-point operation overflowed.
     ArithmeticOverflow,
+    /// Quantization validation failed.
+    QuantizationError(String),
 }
 
 impl core::fmt::Display for ZkmlError {
@@ -25,6 +27,7 @@ impl core::fmt::Display for ZkmlError {
             ZkmlError::InvalidModel(m) => write!(f, "invalid model: {m}"),
             ZkmlError::ParseError(m) => write!(f, "parse error: {m}"),
             ZkmlError::ArithmeticOverflow => write!(f, "arithmetic overflow"),
+            ZkmlError::QuantizationError(m) => write!(f, "quantization error: {m}"),
         }
     }
 }
