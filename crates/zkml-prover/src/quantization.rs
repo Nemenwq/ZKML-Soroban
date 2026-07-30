@@ -209,13 +209,12 @@ fn check_mlp_range(mlp: &TinyMLP) -> Result<(), ZkmlError> {
     Ok(())
 }
 
-/// Check if a value is within the Q16.16 representable range.
-/// Q16.16 uses 1 sign bit, 47 integer bits, and 16 fractional bits.
-/// The representable range is approximately [-140,737,488,355,327.99998, 140,737,488,355,327.99998].
+/// Check if a value is safe for fixed-point arithmetic operations.
+///
+/// Q16.16 can represent any i64 value since it uses 64 bits total.
+/// This check primarily guards against i64::MIN which cannot be safely
+/// negated (needed for abs() operations in overflow bounds analysis).
 fn check_fixed_point_range(value: &i64, name: &str) -> Result<(), ZkmlError> {
-    // Q16.16 can represent any i64 value since it uses 64 bits total.
-    // The check is primarily for documentation and future-proofing.
-    // However, we should ensure the value is not i64::MIN which can cause issues with abs().
     if *value == i64::MIN {
         return Err(ZkmlError::QuantizationError(format!(
             "parameter '{}' has value i64::MIN which cannot be safely negated",
@@ -232,14 +231,14 @@ fn check_fixed_point_range(value: &i64, name: &str) -> Result<(), ZkmlError> {
 ///
 /// # Worst-case bound formula
 ///
-/// For dense/logistic regression layers:
+/// For dense/logistic regression layers, the actual inference computes:
 /// ```text
-/// |output| <= sum_i(|w_i| * max_input) + |bias|
+/// (w.value * x.value) >> scale  // per-product i64 multiply, then shift
 /// ```
 ///
-/// The multiplication uses an i128 intermediate, so we check that:
-/// - Each product |w_i| * max_input fits in i128
-/// - The accumulated sum fits in i64 after the right shift by scale (16 bits)
+/// So we must check two conditions:
+/// 1. Each individual product `|w| * max_input_scaled` fits in i64 (before shift)
+/// 2. The accumulated shifted products fit in i64
 ///
 /// For decision trees: comparisons only, no accumulation, trivially safe.
 ///
@@ -265,26 +264,41 @@ fn check_logistic_overflow_bounds(
     let scale = 16u32;
     let max_input_scaled = (max_input * (1i64 << scale) as f64) as i64;
 
-    // Compute worst-case accumulated dot product
-    let mut worst_case_sum: i128 = 0;
-    for w in lr.weights.iter() {
-        let w_abs = w.value.abs() as i128;
-        let input_abs = max_input_scaled as i128;
-        let product = w_abs * input_abs;
-        worst_case_sum += product;
+    // Check each individual product fits in i64 (before shift)
+    // This matches the actual inference: (w.value * x.value) >> scale
+    for (i, w) in lr.weights.iter().enumerate() {
+        let w_abs = w.value.abs();
+        // Check: w_abs * max_input_scaled <= i64::MAX
+        if w_abs > 0 && max_input_scaled > i64::MAX / w_abs {
+            return Err(ZkmlError::QuantizationError(format!(
+                "logistic regression weight {} may overflow: |w| * max_input exceeds i64::MAX",
+                i
+            )));
+        }
     }
 
-    // Add bias
-    let bias_abs = lr.bias.value.abs() as i128;
-    worst_case_sum += bias_abs;
+    // Check accumulated shifted products fit in i64
+    let mut worst_case_sum: i64 = 0;
+    for w in lr.weights.iter() {
+        let w_abs = w.value.abs();
+        let product = w_abs * max_input_scaled;
+        let shifted = product >> scale;
+        // Check for overflow in accumulation
+        if worst_case_sum > i64::MAX - shifted {
+            return Err(ZkmlError::QuantizationError(
+                "logistic regression may overflow: accumulated shifted products exceed i64::MAX"
+                    .to_string(),
+            ));
+        }
+        worst_case_sum += shifted;
+    }
 
-    // After right shift by scale, the result must fit in i64
-    let shifted = worst_case_sum >> scale;
-    if shifted > i64::MAX as i128 {
-        return Err(ZkmlError::QuantizationError(format!(
-            "logistic regression may overflow: worst-case output {} exceeds i64::MAX",
-            shifted
-        )));
+    // Add bias (already scaled)
+    let bias_abs = lr.bias.value.abs();
+    if worst_case_sum > i64::MAX - bias_abs {
+        return Err(ZkmlError::QuantizationError(
+            "logistic regression may overflow: adding bias exceeds i64::MAX".to_string(),
+        ));
     }
 
     Ok(())
@@ -298,23 +312,46 @@ fn check_dense_layer_overflow_bounds(input_max: f64, layer: &DenseLayer) -> Resu
     let mut max_output_scaled: i64 = i64::MIN;
 
     for j in 0..layer.output_size {
-        let mut worst_case_sum: i128 = 0;
-
-        // Sum over input weights
+        // Check each individual product fits in i64 (before shift)
         for i in 0..layer.input_size {
             let w = layer.weights[j * layer.input_size + i].value;
-            let w_abs = w.abs() as i128;
-            let input_abs = input_max_scaled as i128;
-            worst_case_sum += w_abs * input_abs;
+            let w_abs = w.abs();
+            // Check: w_abs * input_max_scaled <= i64::MAX
+            if w_abs > 0 && input_max_scaled > i64::MAX / w_abs {
+                return Err(ZkmlError::QuantizationError(format!(
+                    "MLP layer {} neuron {} weight {} may overflow: |w| * max_input exceeds i64::MAX",
+                    j, j, i
+                )));
+            }
         }
 
-        // Add bias
-        let bias_abs = layer.biases[j].value.abs() as i128;
-        worst_case_sum += bias_abs;
+        // Check accumulated shifted products fit in i64
+        let mut worst_case_sum: i64 = 0;
+        for i in 0..layer.input_size {
+            let w = layer.weights[j * layer.input_size + i].value;
+            let w_abs = w.abs();
+            let product = w_abs * input_max_scaled;
+            let shifted = product >> scale;
+            // Check for overflow in accumulation
+            if worst_case_sum > i64::MAX - shifted {
+                return Err(ZkmlError::QuantizationError(format!(
+                    "MLP layer {} neuron {} may overflow: accumulated shifted products exceed i64::MAX",
+                    j, j
+                )));
+            }
+            worst_case_sum += shifted;
+        }
 
-        // After right shift
-        let shifted = (worst_case_sum >> scale) as i64;
-        max_output_scaled = max_output_scaled.max(shifted);
+        // Add bias (already scaled)
+        let bias_abs = layer.biases[j].value.abs();
+        if worst_case_sum > i64::MAX - bias_abs {
+            return Err(ZkmlError::QuantizationError(format!(
+                "MLP layer {} neuron {} may overflow: adding bias exceeds i64::MAX",
+                j, j
+            )));
+        }
+
+        max_output_scaled = max_output_scaled.max(worst_case_sum + bias_abs);
     }
 
     // Convert back to f64 for next layer
@@ -427,16 +464,16 @@ mod tests_validation {
 
     #[test]
     fn overflow_bounds_rejects_huge_weights() {
-        // Create a model with huge weights that will overflow with reasonable input
-        // Use weights close to i64::MAX to ensure overflow when accumulated
-        let huge_weight = FixedPoint::from_raw(i64::MAX / 2, 16);
+        // Create a model with a single huge weight that will overflow on per-product multiply
+        // The actual inference does (w.value * x.value) >> scale, so we need w * max_input > i64::MAX
+        let huge_weight = FixedPoint::from_raw(100_000_000_000, 16); // 100 billion
         let lr = LogisticRegression {
-            weights: vec![huge_weight; 1000], // 1000 weights
+            weights: vec![huge_weight],
             bias: FixedPoint::quantize(0.0),
         };
         let model = Model::LogisticRegression(lr);
         let cfg = QuantizationConfig {
-            max_input_magnitude: 10.0, // Small input but huge weights
+            max_input_magnitude: 100_000.0, // Large input to trigger per-product overflow
             min_agreement: 0.99,
         };
         let result = check_overflow_bounds(&model, &cfg);
@@ -613,8 +650,8 @@ mod tests_quantization_accuracy {
         const MAX_ALLOWED_ERROR: f64 = 1.0 / 65536.0; // 2⁻¹⁶
 
         let test_values = vec![
-            0.0, 1.0, -1.0, 0.5, -0.5, 0.1, -0.1, 0.25, -0.25, 100.0, -100.0, 0.01, -0.01, 3.14159,
-            -3.14159,
+            0.0, 1.0, -1.0, 0.5, -0.5, 0.1, -0.1, 0.25, -0.25, 100.0, -100.0, 0.01, -0.01,
+            std::f64::consts::PI, -std::f64::consts::PI,
         ];
 
         for &value in &test_values {
