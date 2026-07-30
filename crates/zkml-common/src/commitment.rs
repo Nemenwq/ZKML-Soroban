@@ -68,19 +68,17 @@ fn poseidon_commit(elements: &[i64], domain: u64) -> Commitment {
     // Iterative hashing: chain hashes for inputs exceeding rate
     // Start with domain tag as initial hash
     let mut current_hash = Fr::from(domain);
-    let mut chunk_index = 0u64;
 
-    for chunk in fr_elements.chunks(rate) {
+    for (chunk_index, chunk) in fr_elements.chunks(rate).enumerate() {
         let mut inputs = chunk.to_vec();
         // Pad with zeros if chunk is smaller than rate
         while inputs.len() < rate {
             inputs.push(Fr::from(0u64));
         }
         // Mix previous hash into first element to preserve order
-        inputs[0] = inputs[0] + current_hash + Fr::from(chunk_index);
+        inputs[0] = inputs[0] + current_hash + Fr::from(chunk_index as u64);
         let chunk_hash = poseidon.hash(&inputs).unwrap();
         current_hash = chunk_hash;
-        chunk_index += 1;
     }
 
     // Convert Fr to bytes

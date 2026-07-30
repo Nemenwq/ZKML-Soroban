@@ -233,12 +233,14 @@ fn check_fixed_point_range(value: &i64, name: &str) -> Result<(), ZkmlError> {
 ///
 /// For dense/logistic regression layers, the actual inference computes:
 /// ```text
-/// (w.value * x.value) >> scale  // per-product i64 multiply, then shift
+/// product = w.checked_mul(x)  // uses i128 intermediate, then shifts
+/// acc = acc.checked_add(product)  // checks i64 overflow after shift
 /// ```
 ///
-/// So we must check two conditions:
-/// 1. Each individual product `|w| * max_input_scaled` fits in i64 (before shift)
-/// 2. The accumulated shifted products fit in i64
+/// Since `checked_mul` uses an i128 intermediate before shifting, the per-product
+/// multiply won't overflow i64. The shift happens before accumulation, so we check:
+/// 1. Each shifted product `|w| * max_input_scaled >> scale` fits in i64
+/// 2. The accumulated shifted products fit in i64 (checked_add)
 ///
 /// For decision trees: comparisons only, no accumulation, trivially safe.
 ///
@@ -264,25 +266,27 @@ fn check_logistic_overflow_bounds(
     let scale = 16u32;
     let max_input_scaled = (max_input * (1i64 << scale) as f64) as i64;
 
-    // Check each individual product fits in i64 (before shift)
-    // This matches the actual inference: (w.value * x.value) >> scale
+    // Check each shifted product fits in i64
+    // checked_mul uses i128 intermediate, then shifts, so we check the shifted result
     for (i, w) in lr.weights.iter().enumerate() {
         let w_abs = w.value.abs();
-        // Check: w_abs * max_input_scaled <= i64::MAX
-        if w_abs > 0 && max_input_scaled > i64::MAX / w_abs {
+        let product = w_abs as i128 * max_input_scaled as i128;
+        let shifted = product >> scale;
+        // Check: shifted product fits in i64 (cast from i128 may truncate)
+        if shifted > i64::MAX as i128 {
             return Err(ZkmlError::QuantizationError(format!(
-                "logistic regression weight {} may overflow: |w| * max_input exceeds i64::MAX",
+                "logistic regression weight {} may overflow: shifted product exceeds i64::MAX",
                 i
             )));
         }
     }
 
-    // Check accumulated shifted products fit in i64
+    // Check accumulated shifted products fit in i64 (checked_add)
     let mut worst_case_sum: i64 = 0;
     for w in lr.weights.iter() {
         let w_abs = w.value.abs();
-        let product = w_abs * max_input_scaled;
-        let shifted = product >> scale;
+        let product = w_abs as i128 * max_input_scaled as i128;
+        let shifted = (product >> scale) as i64;
         // Check for overflow in accumulation
         if worst_case_sum > i64::MAX - shifted {
             return Err(ZkmlError::QuantizationError(
@@ -312,31 +316,33 @@ fn check_dense_layer_overflow_bounds(input_max: f64, layer: &DenseLayer) -> Resu
     let mut max_output_scaled: i64 = i64::MIN;
 
     for j in 0..layer.output_size {
-        // Check each individual product fits in i64 (before shift)
+        // Check each shifted product fits in i64
         for i in 0..layer.input_size {
             let w = layer.weights[j * layer.input_size + i].value;
             let w_abs = w.abs();
-            // Check: w_abs * input_max_scaled <= i64::MAX
-            if w_abs > 0 && input_max_scaled > i64::MAX / w_abs {
+            let product = w_abs as i128 * input_max_scaled as i128;
+            let shifted = product >> scale;
+            // Check: shifted product fits in i64 (cast from i128 may truncate)
+            if shifted > i64::MAX as i128 {
                 return Err(ZkmlError::QuantizationError(format!(
-                    "MLP layer {} neuron {} weight {} may overflow: |w| * max_input exceeds i64::MAX",
-                    j, j, i
+                    "MLP neuron {} weight {} may overflow: shifted product exceeds i64::MAX",
+                    j, i
                 )));
             }
         }
 
-        // Check accumulated shifted products fit in i64
+        // Check accumulated shifted products fit in i64 (checked_add)
         let mut worst_case_sum: i64 = 0;
         for i in 0..layer.input_size {
             let w = layer.weights[j * layer.input_size + i].value;
             let w_abs = w.abs();
-            let product = w_abs * input_max_scaled;
-            let shifted = product >> scale;
+            let product = w_abs as i128 * input_max_scaled as i128;
+            let shifted = (product >> scale) as i64;
             // Check for overflow in accumulation
             if worst_case_sum > i64::MAX - shifted {
                 return Err(ZkmlError::QuantizationError(format!(
-                    "MLP layer {} neuron {} may overflow: accumulated shifted products exceed i64::MAX",
-                    j, j
+                    "MLP neuron {} may overflow: accumulated shifted products exceed i64::MAX",
+                    j
                 )));
             }
             worst_case_sum += shifted;
@@ -346,8 +352,8 @@ fn check_dense_layer_overflow_bounds(input_max: f64, layer: &DenseLayer) -> Resu
         let bias_abs = layer.biases[j].value.abs();
         if worst_case_sum > i64::MAX - bias_abs {
             return Err(ZkmlError::QuantizationError(format!(
-                "MLP layer {} neuron {} may overflow: adding bias exceeds i64::MAX",
-                j, j
+                "MLP neuron {} may overflow: adding bias exceeds i64::MAX",
+                j
             )));
         }
 
@@ -464,16 +470,16 @@ mod tests_validation {
 
     #[test]
     fn overflow_bounds_rejects_huge_weights() {
-        // Create a model with a single huge weight that will overflow on per-product multiply
-        // The actual inference does (w.value * x.value) >> scale, so we need w * max_input > i64::MAX
-        let huge_weight = FixedPoint::from_raw(100_000_000_000, 16); // 100 billion
+        // Create a model with weights that will cause shifted product overflow
+        // With checked_mul using i128 intermediate, the shifted result must fit in i64
+        let huge_weight = FixedPoint::from_raw(i64::MAX, 16);
         let lr = LogisticRegression {
             weights: vec![huge_weight],
             bias: FixedPoint::quantize(0.0),
         };
         let model = Model::LogisticRegression(lr);
         let cfg = QuantizationConfig {
-            max_input_magnitude: 100_000.0, // Large input to trigger per-product overflow
+            max_input_magnitude: 1000.0, // Large input to trigger shifted product overflow
             min_agreement: 0.99,
         };
         let result = check_overflow_bounds(&model, &cfg);
@@ -650,8 +656,21 @@ mod tests_quantization_accuracy {
         const MAX_ALLOWED_ERROR: f64 = 1.0 / 65536.0; // 2⁻¹⁶
 
         let test_values = vec![
-            0.0, 1.0, -1.0, 0.5, -0.5, 0.1, -0.1, 0.25, -0.25, 100.0, -100.0, 0.01, -0.01,
-            std::f64::consts::PI, -std::f64::consts::PI,
+            0.0,
+            1.0,
+            -1.0,
+            0.5,
+            -0.5,
+            0.1,
+            -0.1,
+            0.25,
+            -0.25,
+            100.0,
+            -100.0,
+            0.01,
+            -0.01,
+            std::f64::consts::PI,
+            -std::f64::consts::PI,
         ];
 
         for &value in &test_values {

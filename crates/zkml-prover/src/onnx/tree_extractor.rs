@@ -243,7 +243,7 @@ fn validate_tree_structure(tree: &DecisionTree) -> Result<(), OnnxImportError> {
     }
 
     // Check that every path reaches a leaf (no split-only paths)
-    for (_i, node) in tree.nodes.iter().enumerate() {
+    for node in tree.nodes.iter() {
         if let TreeNode::Split { left, right, .. } = node {
             if !matches!(tree.nodes[*left], TreeNode::Leaf { .. })
                 && !matches!(tree.nodes[*right], TreeNode::Leaf { .. })

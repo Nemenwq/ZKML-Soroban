@@ -73,7 +73,7 @@ pub fn extract_linear_classifier(node: &NodeProto) -> Result<LogisticRegression,
     }
 
     // Convert to f64 for quantization
-    let weights_f64: Vec<f64> = coefficients.iter().map(|&f| f as f64).collect();
+    let weights_f64: Vec<f64> = coefficients.to_vec();
     let bias_f64 = intercepts[0] as f64;
 
     // Quantize using existing helpers
