@@ -190,6 +190,50 @@ The contract does not recompute the hash on-chain (to avoid gas costs). Instead,
 
 The flat public-input buffer passed to `verify_inference` is `model_hash (32 bytes) || input_hash (32 bytes) || output`, and every field is **little-endian**, matching this scheme (`to_bytes_le`) and the prover (`i64::to_le_bytes`). soroban's `U256` parses big-endian only, so the verifier's `bytes_to_fr` zero-extends each field to 32 bytes (low order first) and reverses it into big-endian before parsing. Any future circuit or prover integration (issue #11) MUST keep emitting little-endian public inputs so the on-chain scalars match.
 
+### Groth16 Public Input Layout
+
+The verifier constructs the Groth16 pairing check using the public input scalars and the verification key's IC (Input Commitment) points. The computation follows:
+
+```
+L = ic[0] + sum(scalar_i * ic[i]) for i from 1 to n
+```
+
+where `n` is the total number of public input scalars.
+
+#### Extensible Layout
+
+The public input buffer is parsed into scalars with the following extensible layout:
+
+1. **model_hash**: 32 bytes (canonical Poseidon commitment)
+2. **input_hash**: 32 bytes (canonical Poseidon commitment)
+3. **output_scalars**: N × 8 bytes (each canonical i64 in little-endian)
+
+**Canonical length requirements**:
+- `model_hash` must be exactly 32 bytes
+- `input_hash` must be exactly 32 bytes
+- Each output scalar must be exactly 8 bytes (canonical i64)
+- Total output length must be a multiple of 8 bytes
+
+The verifier rejects any public input that violates these canonical length requirements with `InvalidPublicInputLength`.
+
+#### Multi-Scalar Output
+
+The output field supports multiple scalars for multi-class inference decisions:
+
+- **Single-class output**: 8 bytes (one i64)
+- **Multi-class output**: N × 8 bytes (N i64 values, e.g., class probabilities or logits)
+
+For example, a 3-class classifier would have:
+- Total public inputs: 32 + 32 + 24 = 88 bytes
+- Parsed scalars: [model_hash, input_hash, output_0, output_1, output_2]
+- Required IC points: 5 (ic[0], ic[1], ic[2], ic[3], ic[4])
+
+#### Verification Key Validation
+
+The verification key must contain exactly `n + 1` IC points where `n` is the number of parsed public input scalars. The verifier validates this with `VerificationKeyLengthMismatch` if the lengths don't match.
+
+This validation ensures that the verification key was generated for the exact public input structure being verified, preventing mismatched key/data pairs.
+
 ## Security Properties
 
 ### Collision Resistance
