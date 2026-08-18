@@ -33,7 +33,9 @@ pub fn input_commitment(inputs: &[FixedPoint]) -> Commitment {
 /// commitments are fully computed so the on-chain interface can be exercised
 /// end to end. STARK→Groth16 compression is tracked in issue #11.
 pub fn generate_proof(model: &Model, inputs: &[FixedPoint]) -> Result<VerificationBundle, String> {
-    let output = crate::inference::run_inference(model, inputs);
+    // Fallible inference: a feature-count mismatch or an overflow must surface
+    // as `Err` on this public API rather than panicking inside the caller.
+    let output = crate::inference::try_run_inference(model, inputs).map_err(|e| e.to_string())?;
 
     let public_inputs = PublicInputs {
         model_hash: model_commitment(model),

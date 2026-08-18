@@ -3,51 +3,46 @@
 //! Usage:
 //!
 //! ```text
-//! zkml-prover <model.json> <comma,separated,inputs>
+//! zkml-prover <COMMAND>
+//!
+//! commit   <MODEL>                       Model commitment as 64-char hex
+//! infer    <MODEL> -i <CSV>              Commitment + dequantized output + raw Q16.16
+//! prove    <MODEL> -i <CSV> [-o <FILE>]  VerificationBundle JSON (stdout or file)
+//! validate <MODEL> [--dataset <FILE>]    Quantization validation report
+//! inspect  <MODEL>                       Kind, features, structure, commitment, validity
 //! ```
 //!
-//! Imports a model from the JSON exchange format, prints the model commitment,
-//! runs inference on the provided input vector, and prints the output.
+//! Everything of substance lives in [`zkml_prover::cli`] so the command bodies
+//! are testable without spawning a process; this binary only dispatches and
+//! maps [`CliError`] onto an exit code. See `docs/cli.md`.
 
+use std::io::Write;
 use std::process::exit;
 
-use zkml_common::commitment::to_hex;
-use zkml_common::fixed_point::FixedPoint;
-use zkml_prover::inference::run_inference;
-use zkml_prover::model_io::import_json;
-use zkml_prover::prover::model_commitment;
+use clap::Parser;
+use zkml_prover::cli::{run, Cli, CliError};
 
 fn main() {
-    let args: Vec<String> = std::env::args().collect();
-    if args.len() != 3 {
-        eprintln!("usage: zkml-prover <model.json> <comma,separated,inputs>");
-        exit(2);
+    let cli = Cli::parse(); // clap exits 2 on its own for bad invocations
+    let stdout = std::io::stdout();
+    let mut out = stdout.lock();
+
+    if let Err(e) = run(&cli, &mut out) {
+        // Flush whatever the command already emitted before the error text, so
+        // partial output and the diagnostic do not interleave.
+        let _ = out.flush();
+        eprintln!("error: {e}");
+        exit(e.exit_code());
     }
 
-    let bytes = match std::fs::read(&args[1]) {
-        Ok(b) => b,
-        Err(e) => {
-            eprintln!("failed to read model file: {e}");
-            exit(1);
-        }
-    };
-
-    let model = match import_json(&bytes) {
-        Ok(m) => m,
-        Err(e) => {
-            eprintln!("failed to import model: {e}");
-            exit(1);
-        }
-    };
-
-    println!("model commitment: {}", to_hex(&model_commitment(&model)));
-
-    let inputs: Vec<FixedPoint> = args[2]
-        .split(',')
-        .filter_map(|s| s.trim().parse::<f64>().ok())
-        .map(FixedPoint::quantize)
-        .collect();
-
-    let output = run_inference(&model, &inputs);
-    println!("output: {}", output.dequantize());
+    if let Err(e) = out.flush() {
+        eprintln!("error: failed to flush stdout: {e}");
+        exit(
+            CliError::Io {
+                path: "<stdout>".into(),
+                message: e.to_string(),
+            }
+            .exit_code(),
+        );
+    }
 }

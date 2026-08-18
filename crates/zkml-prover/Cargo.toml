@@ -18,6 +18,10 @@ zkml-common = { path = "../zkml-common" }
 serde = { workspace = true }
 serde_json = "1"
 
+# CLI argument parsing. Loose version like serde/soroban-sdk; exact `=` pins are
+# reserved for prost/risc0 where API drift is a tracked risk.
+clap = { version = "4", features = ["derive"] }
+
 # Phase 1: RISC Zero zkVM (pinned exactly; see docs/proving.md).
 risc0-zkvm = { workspace = true, optional = true }
 zkml-methods = { path = "../../methods", optional = true }

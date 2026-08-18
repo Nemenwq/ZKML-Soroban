@@ -8,6 +8,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- `zkml-prover` CLI subcommands (`commit`, `infer`, `prove`, `validate`,
+  `inspect`) built on clap, with strict `--input` parsing that rejects
+  unparseable, empty, non-finite, and out-of-range fields instead of silently
+  dropping them. Replaces the positional `zkml-prover <model> "<inputs>"` form.
 - TinyMLP fixed-point inference with checked Q16.16 dense layers, ReLU on
   hidden layers only, topology validation via `TinyMLP::validate` /
   `try_run_inference`, and prover acceptance tests (hand-computed 2→2→1,
@@ -35,6 +39,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Element-wise `relu6_vec`, `hard_sigmoid_vec`, and `hard_swish_vec` helpers.
 - Initial workspace scaffold with `zkml-common`, `zkml-prover`, and
   `zkml-verifier` crates.
+
+### Changed
+- `prover::generate_proof` runs `try_run_inference` instead of the panicking
+  `run_inference`, so feature-count and overflow failures surface as `Err`
+  rather than aborting the caller.
 
 [Unreleased]: https://github.com/diegoveme/ZKML-Soroban/compare/main...HEAD
 

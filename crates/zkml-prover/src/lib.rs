@@ -7,6 +7,7 @@
 //! 3. Executing model inference inside a ZK-provable environment.
 //! 4. Generating Groth16 proofs that attest to correct inference.
 
+pub mod cli;
 pub mod inference;
 pub mod model_io;
 pub mod onnx;
