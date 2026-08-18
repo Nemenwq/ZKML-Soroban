@@ -226,7 +226,7 @@ The output field supports multiple scalars for multi-class inference decisions:
 For example, a 3-class classifier would have:
 - Total public inputs: 32 + 32 + 24 = 88 bytes
 - Parsed scalars: [model_hash, input_hash, output_0, output_1, output_2]
-- Required IC points: 5 (ic[0], ic[1], ic[2], ic[3], ic[4])
+- Required IC points: 6 (ic[0], ic[1], ic[2], ic[3], ic[4], ic[5])
 
 #### Verification Key Validation
 
