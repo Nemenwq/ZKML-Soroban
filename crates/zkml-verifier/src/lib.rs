@@ -329,7 +329,10 @@ impl ZkmlVerifierContract {
         }
 
         // Start with ic[0]
-        let ic0_bytes = vk.ic.get(0).ok_or(VerificationError::MalformedVerificationKey)?;
+        let ic0_bytes = vk
+            .ic
+            .get(0)
+            .ok_or(VerificationError::MalformedVerificationKey)?;
         let mut l = Self::deserialize_vk_ic(env, &ic0_bytes)?;
 
         // Add each scalar * ic[i] term
@@ -555,7 +558,10 @@ mod test_guards {
         let public_inputs = Bytes::from_slice(&env, &[3u8; 72]);
 
         let result = client.try_verify_inference(&proof_a, &proof_b, &proof_c, &public_inputs);
-        assert_eq!(result, Err(Ok(VerificationError::VerificationKeyLengthMismatch)));
+        assert_eq!(
+            result,
+            Err(Ok(VerificationError::VerificationKeyLengthMismatch))
+        );
     }
 
     #[test]
@@ -579,7 +585,9 @@ mod test_guards {
         let result = client.try_verify_inference(&proof_a, &proof_b, &proof_c, &public_inputs);
         // The important thing is it doesn't return VerificationKeyLengthMismatch
         if let Err(Ok(VerificationError::VerificationKeyLengthMismatch)) = result {
-            panic!("Should not fail with VerificationKeyLengthMismatch for valid multi-scalar output");
+            panic!(
+                "Should not fail with VerificationKeyLengthMismatch for valid multi-scalar output"
+            );
         }
     }
 
